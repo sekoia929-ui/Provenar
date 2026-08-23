@@ -21,7 +21,7 @@ import json
 import os
 import secrets
 import time
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -50,13 +50,14 @@ class CommitResponse(BaseModel):
 class RevealRequest(BaseModel):
     request_id: str
     decision: dict[str, Any] = Field(..., description="Must match the committed payload exactly")
-    result: Literal["pass", "fail", "degraded"]
+    score: int = Field(..., ge=0, le=100, description="ERC-8004 validation score, 0-100")
     evidence_uri: str = Field(..., description="Where the fill / outcome record lives")
+    tag: str = Field(default="", description="Optional ERC-8004 response tag, e.g. 'trading-decision'")
 
 
 class RevealResponse(BaseModel):
     request_id: str
-    result: str
+    score: int
     on_chain_tx: str | None
     revealed_at: int
 
@@ -67,10 +68,6 @@ def _canonical_hash(agent_id: int, decision: dict[str, Any], nonce: str) -> str:
     payload = {"agent_id": agent_id, "decision": decision, "nonce": nonce}
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(blob).hexdigest()
-
-
-def _result_code(result: str) -> int:
-    return {"fail": 0, "pass": 1, "degraded": 2}[result]
 
 
 # --- chain adapter stub ---------------------------------------------------
@@ -86,9 +83,15 @@ async def _seal_on_chain(request_hash: str, agent_id: int) -> str:
 
 
 async def _reveal_on_chain(
-    request_hash: str, agent_id: int, result_code: int, evidence_uri: str
+    request_hash: str, agent_id: int, score: int, evidence_uri: str, tag: str
 ) -> str:
-    """Call OmoValidationAdapter.reveal(...). Same stub convention as above."""
+    """
+    Call OmoValidationAdapter.reveal(...), which itself calls the real
+    ERC-8004 ValidationRegistry.validationResponse(). This will fail
+    on-chain if the agent hasn't already called validationRequest() naming
+    this adapter as validatorAddress — that's registry-enforced, not
+    re-checked here. Stubbed until ROBINHOOD_RPC_URL / ADAPTER_ADDRESS are set.
+    """
     if not os.getenv("ROBINHOOD_RPC_URL"):
         return "unarmed"
     raise NotImplementedError("wire web3.py call to OmoValidationAdapter.reveal here")
@@ -133,20 +136,19 @@ async def reveal(req: RevealRequest) -> RevealResponse:
     if recomputed != record["request_hash"]:
         raise HTTPException(400, "revealed decision does not match sealed hash")
 
-    result_code = _result_code(req.result)
     tx = await _reveal_on_chain(
-        record["request_hash"], record["agent_id"], result_code, req.evidence_uri
+        record["request_hash"], record["agent_id"], req.score, req.evidence_uri, req.tag
     )
 
     record["revealed"] = True
-    record["result"] = req.result
+    record["score"] = req.score
     record["evidence_uri"] = req.evidence_uri
     record["revealed_at"] = int(time.time())
     record["reveal_tx"] = tx
 
     return RevealResponse(
         request_id=req.request_id,
-        result=req.result,
+        score=req.score,
         on_chain_tx=tx,
         revealed_at=record["revealed_at"],
     )

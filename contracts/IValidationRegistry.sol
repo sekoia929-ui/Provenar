@@ -1,39 +1,61 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @notice Minimal interface for the ERC-8004 Validation Registry.
-/// @dev Mirrors the reference registry: validators post pass/fail results
-///      against a (agentId, requestHash) pair. Exact selector names should
-///      be confirmed against the deployed registry address on the target
-///      chain before mainnet use — this is written from the public spec,
-///      not a copied ABI.
+/// @notice Interface matching the real ERC-8004 ValidationRegistryUpgradeable
+///         contract (erc-8004/erc-8004-contracts), not the spec-text guess
+///         this file originally contained. Confirmed against the actual
+///         Solidity source on 2026-08-23.
+/// @dev Key departure from a naive read of the EIP: the AGENT (its owner or
+///      an approved operator on the Identity Registry) calls
+///      validationRequest, naming the validator's address. The validator
+///      then calls validationResponse. Provenar acts as the validator, so
+///      Provenar never calls validationRequest itself — it only ever calls
+///      validationResponse once an agent's request has named it.
 interface IValidationRegistry {
-    event ValidationRequested(
-        bytes32 indexed requestHash,
+    event ValidationRequest(
+        address indexed validatorAddress,
         uint256 indexed agentId,
-        address indexed requester
+        string requestURI,
+        bytes32 indexed requestHash
     );
 
-    event ValidationResponded(
-        bytes32 indexed requestHash,
+    event ValidationResponse(
+        address indexed validatorAddress,
         uint256 indexed agentId,
-        address indexed validator,
-        uint8 result, // 0 = fail, 1 = pass, 2 = degraded/partial
-        bytes32 evidenceHash,
-        string evidenceURI
+        bytes32 indexed requestHash,
+        uint8 response, // 0..100
+        string responseURI,
+        bytes32 responseHash,
+        string tag
     );
 
-    function requestValidation(
+    /// @dev Called by the agent's owner/approved operator, NOT by Provenar.
+    function validationRequest(
+        address validatorAddress,
         uint256 agentId,
-        bytes32 requestHash,
-        string calldata dataURI
+        string calldata requestURI,
+        bytes32 requestHash
     ) external;
 
-    function respondValidation(
+    /// @dev Called by Provenar, since Provenar is the named validatorAddress.
+    function validationResponse(
         bytes32 requestHash,
-        uint256 agentId,
-        uint8 result,
-        bytes32 evidenceHash,
-        string calldata evidenceURI
+        uint8 response,
+        string calldata responseURI,
+        bytes32 responseHash,
+        string calldata tag
     ) external;
+
+    function getValidationStatus(bytes32 requestHash)
+        external
+        view
+        returns (
+            address validatorAddress,
+            uint256 agentId,
+            uint8 response,
+            bytes32 responseHash,
+            string memory tag,
+            uint256 lastUpdate
+        );
 }
+
