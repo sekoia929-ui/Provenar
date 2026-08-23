@@ -1,5 +1,5 @@
 """
-omo-validator: a commit-as-a-service Validation Registry provider for
+Provenar: a commit-as-a-service Validation Registry provider for
 ERC-8004 agents on Robinhood Chain (or any EVM chain with a deployed
 Validation Registry).
 
@@ -26,7 +26,7 @@ from typing import Any, Literal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="omo-validator", version="0.1.0")
+app = FastAPI(title="Provenar", version="0.1.0")
 
 # --- storage -----------------------------------------------------------
 # Swap for Supabase/Postgres in production; in-memory here for the skeleton.

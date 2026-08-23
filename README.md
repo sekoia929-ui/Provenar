@@ -1,4 +1,4 @@
-# omo-validator
+# Provenar
 
 A commit-as-a-service **ERC-8004 Validation Registry provider**.
 
