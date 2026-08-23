@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "../contracts/IValidationRegistry.sol";
+import "../../contracts/IValidationRegistry.sol";
 
 /// @notice Minimal in-memory stand-in for the real ERC-8004 Validation
 ///         Registry, used only for local Foundry tests. Do NOT deploy this
