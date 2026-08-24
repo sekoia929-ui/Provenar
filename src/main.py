@@ -25,6 +25,8 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+from web3 import Web3
+from eth_account import Account
 
 app = FastAPI(title="Provenar", version="0.1.0")
 
@@ -70,16 +72,90 @@ def _canonical_hash(agent_id: int, decision: dict[str, Any], nonce: str) -> str:
     return hashlib.sha256(blob).hexdigest()
 
 
-# --- chain adapter stub ---------------------------------------------------
+# --- chain adapter --------------------------------------------------------
+# Minimal ABI: only the two functions this service actually calls.
+_ADAPTER_ABI = [
+    {
+        "inputs": [
+            {"name": "requestHash", "type": "bytes32"},
+            {"name": "agentId", "type": "uint256"},
+        ],
+        "name": "seal",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    },
+    {
+        "inputs": [
+            {"name": "requestHash", "type": "bytes32"},
+            {"name": "preimageHash", "type": "bytes32"},
+            {"name": "score", "type": "uint8"},
+            {"name": "evidenceHash", "type": "bytes32"},
+            {"name": "evidenceURI", "type": "string"},
+            {"name": "tag", "type": "string"},
+        ],
+        "name": "reveal",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    },
+]
+
+_w3: Web3 | None = None
+_adapter = None
+_operator_account = None
+
+
+def _get_chain():
+    """
+    Lazily build the web3 connection, signing account, and contract instance.
+    Only called once RPC/adapter/key env vars are confirmed present -- see
+    the `not os.getenv(...)` early-return in each on-chain function below.
+    Uses legacy (non-EIP-1559) gas fields throughout: Robinhood Chain testnet
+    isn't in web3.py's built-in chain registry, and letting web3.py guess at
+    EIP-1559 fee fields for an unrecognized chain is the same class of
+    problem we hit with viem's chain-list lookup earlier -- explicit
+    gasPrice sidesteps it entirely.
+    """
+    global _w3, _adapter, _operator_account
+    if _w3 is None:
+        _w3 = Web3(Web3.HTTPProvider(os.environ["ROBINHOOD_RPC_URL"]))
+        _operator_account = Account.from_key(os.environ["ADAPTER_OPERATOR_PRIVATE_KEY"])
+        adapter_address = Web3.to_checksum_address(os.environ["ADAPTER_ADDRESS"])
+        _adapter = _w3.eth.contract(address=adapter_address, abi=_ADAPTER_ABI)
+    return _w3, _adapter, _operator_account
+
+
+def _send(w3: Web3, account, fn) -> str:
+    """Build, sign, send, and wait for one contract-function call. Returns tx hash hex."""
+    tx = fn.build_transaction(
+        {
+            "from": account.address,
+            "nonce": w3.eth.get_transaction_count(account.address),
+            "gasPrice": w3.eth.gas_price,
+            "chainId": w3.eth.chain_id,
+        }
+    )
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+    if receipt.status != 1:
+        raise RuntimeError(f"on-chain call reverted, tx {tx_hash.hex()}")
+    return tx_hash.hex()
+
+
 async def _seal_on_chain(request_hash: str, agent_id: int) -> str:
     """
-    Call OmoValidationAdapter.seal(requestHash, agentId).
-    Wire this to viem/web3.py against RH Chain RPC once the adapter is deployed.
-    Returns a tx hash. Stubbed until ROBINHOOD_RPC_URL / ADAPTER_ADDRESS are set.
+    Call OmoValidationAdapter.seal(requestHash, agentId). Returns "unarmed"
+    (no real tx sent) until ROBINHOOD_RPC_URL / ADAPTER_ADDRESS /
+    ADAPTER_OPERATOR_PRIVATE_KEY are all set -- same convention as omo:
+    reads/gates/seals-locally without faking a transaction.
     """
     if not os.getenv("ROBINHOOD_RPC_URL"):
-        return "unarmed"  # same convention as omo: reads/gates/seals-locally, doesn't fake a tx
-    raise NotImplementedError("wire web3.py call to OmoValidationAdapter.seal here")
+        return "unarmed"
+    w3, adapter, account = _get_chain()
+    fn = adapter.functions.seal(bytes.fromhex(request_hash), agent_id)
+    return _send(w3, account, fn)
 
 
 async def _reveal_on_chain(
@@ -87,14 +163,23 @@ async def _reveal_on_chain(
 ) -> str:
     """
     Call OmoValidationAdapter.reveal(...), which itself calls the real
-    ERC-8004 ValidationRegistry.validationResponse(). This will fail
-    on-chain if the agent hasn't already called validationRequest() naming
-    this adapter as validatorAddress — that's registry-enforced, not
-    re-checked here. Stubbed until ROBINHOOD_RPC_URL / ADAPTER_ADDRESS are set.
+    ERC-8004 ValidationRegistry.validationResponse(). This reverts on-chain
+    if the agent hasn't already called validationRequest() naming this
+    adapter as validatorAddress -- that's enforced by the registry, not
+    re-checked here. preimageHash is passed as the same value as
+    requestHash: the FastAPI layer already verified the revealed plaintext
+    hashes back to what was sealed (see /reveal below), so by the time this
+    function runs, requestHash IS the confirmed-correct preimage hash.
     """
     if not os.getenv("ROBINHOOD_RPC_URL"):
         return "unarmed"
-    raise NotImplementedError("wire web3.py call to OmoValidationAdapter.reveal here")
+    w3, adapter, account = _get_chain()
+    request_hash_bytes = bytes.fromhex(request_hash)
+    evidence_hash_bytes = hashlib.sha256(evidence_uri.encode()).digest()
+    fn = adapter.functions.reveal(
+        request_hash_bytes, request_hash_bytes, score, evidence_hash_bytes, evidence_uri, tag
+    )
+    return _send(w3, account, fn)
 
 
 # --- endpoints -------------------------------------------------------------

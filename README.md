@@ -26,22 +26,62 @@ Sybil-able reputation scores the ecosystem is currently stuck with.
 
 | piece | file | status |
 | --- | --- | --- |
-| Validation Registry interface | `contracts/IValidationRegistry.sol` | written from public spec — confirm against deployed ABI before use |
-| Seal/reveal adapter | `contracts/OmoValidationAdapter.sol` | holds no funds, operator-key gated, mirrors omo's commit-key separation |
-| Commit/reveal/verify API | `src/main.py` | FastAPI skeleton, on-chain calls stubbed pending RPC + deployed adapter address |
+| Validation Registry interface | `contracts/IValidationRegistry.sol` | corrected against the real deployed ABI (erc-8004/erc-8004-contracts), not just the EIP text |
+| Seal/reveal adapter | `contracts/OmoValidationAdapter.sol` | holds no funds, operator-key gated, mirrors omo's commit-key separation — **deployed on Robinhood Chain testnet**, see below |
+| Commit/reveal/verify API | `src/main.py` | FastAPI, wired to real web3.py calls — verified end-to-end against a local chain, see "Verification" below |
+
+## deployed addresses (Robinhood Chain testnet, chain ID 46630)
+
+| contract | address |
+| --- | --- |
+| IdentityRegistry (proxy) | `0xa44f32c6ac995e747f98cdb8a4d822b04af6decd` |
+| ValidationRegistry (proxy) | `0xb765bc96851378c893988e45e5d29fd224fdad7d` |
+| OmoValidationAdapter | `0x2625b77F4cc01208201D85E0914DFAc18852891a` |
+
+Deployed via `lib/erc-8004-contracts/scripts/deploy-provenar.ts` (registries)
+and `script/Deploy.s.sol` (adapter). The default `ignition/modules/ERC8004.ts`
+in the vendored submodule is stale — it references pre-upgrade contract
+names that no longer exist — so registries were deployed with a custom
+script using the tested `HardhatMinimalUUPS` → upgrade pattern from
+`test/upgradeable.ts` instead.
+
+## running the API against a deployed adapter
+
+```bash
+pip install -r requirements.txt
+export ROBINHOOD_RPC_URL=https://rpc.testnet.chain.robinhood.com
+export ADAPTER_ADDRESS=0x2625b77F4cc01208201D85E0914DFAc18852891a
+export ADAPTER_OPERATOR_PRIVATE_KEY=<the wallet that deployed the adapter>
+uvicorn src.main:app --reload
+```
+
+Without these three env vars set, `/commit` and `/reveal` still work but
+return `"unarmed"` instead of a real tx hash — same convention as omo:
+gates and gets the plaintext right locally, just doesn't touch the chain.
+
+## verification
+
+Both the Foundry contract tests (`forge test`, 7/7 passing) and a full
+local end-to-end run (Anvil + real `seal()`/`reveal()` transactions +
+an independent `cast call getValidationStatus(...)` read, bypassing this
+service's own API entirely) confirm the whole loop: commit hashes and
+seals → an agent calls `validationRequest()` naming this adapter as
+validator → reveal checks the plaintext matches, then calls
+`validationResponse()` → the score lands on-chain and reads back correctly
+from the registry directly.
 
 ## not yet done (in order)
 
-1. Confirm the actual deployed `IValidationRegistry` ABI on Robinhood Chain
-   (or wherever ERC-8004 registries are live) — the interface here is
-   written from the EIP text, not a copied ABI.
-2. Deploy `OmoValidationAdapter` pointed at that registry.
-3. Wire `_seal_on_chain` / `_reveal_on_chain` in `src/main.py` to web3.py
-   against the adapter address.
-4. Persistence: swap the in-memory dict for Supabase, matching your usual stack.
-5. Backtest harness for the *gate rules themselves* (separate from this
+1. Persistence: swap the in-memory `_COMMITMENTS` dict in `src/main.py` for
+   Supabase, matching your usual stack — right now state doesn't survive
+   a server restart.
+2. Get one real third-party agent through the full loop on the actual
+   Robinhood Chain testnet deployment above (not just the local Anvil test).
+3. Backtest harness for the *gate rules themselves* (separate from this
    attestation layer) against historical price data before anyone wires up
    a live trading key on top of this.
+4. Metered-tier billing logic (free tier / per-commitment pricing) once
+   there's real usage to meter.
 
 ## explicitly out of scope
 
