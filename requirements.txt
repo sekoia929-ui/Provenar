@@ -4,3 +4,5 @@ pydantic==2.13.4
 pydantic_core==2.46.4
 eth-account==0.14.0
 web3==7.16.0
+uvicorn==0.52.4
+requests==2.32.5
