@@ -27,12 +27,25 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from web3 import Web3
 from eth_account import Account
+from supabase import create_client, Client
 
 app = FastAPI(title="Provenar", version="0.1.0")
 
 # --- storage -----------------------------------------------------------
-# Swap for Supabase/Postgres in production; in-memory here for the skeleton.
-_COMMITMENTS: dict[str, dict[str, Any]] = {}
+# Supabase (Postgres) instead of the earlier in-memory dict, so state
+# survives server restarts. Uses the service_role key -- this backend is
+# the only writer/reader of this table, so RLS is deliberately locked to
+# "no public access" (see the migration) and bypassed only from here.
+_supabase: Client | None = None
+
+
+def _get_db() -> Client:
+    global _supabase
+    if _supabase is None:
+        _supabase = create_client(
+            os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"]
+        )
+    return _supabase
 
 
 # --- models --------------------------------------------------------------
@@ -192,24 +205,30 @@ async def commit(req: CommitRequest) -> CommitResponse:
 
     tx = await _seal_on_chain(request_hash, req.agent_id)
 
-    _COMMITMENTS[request_id] = {
-        "agent_id": req.agent_id,
-        "decision": req.decision,
-        "nonce": nonce,
-        "request_hash": request_hash,
-        "sealed_at": sealed_at,
-        "seal_tx": tx,
-        "revealed": False,
-    }
+    db = _get_db()
+    db.table("commitments").insert(
+        {
+            "request_id": request_id,
+            "agent_id": req.agent_id,
+            "decision": req.decision,
+            "nonce": nonce,
+            "request_hash": request_hash,
+            "sealed_at": sealed_at,
+            "seal_tx": tx,
+            "revealed": False,
+        }
+    ).execute()
 
     return CommitResponse(request_id=request_id, request_hash=request_hash, sealed_at=sealed_at)
 
 
 @app.post("/reveal", response_model=RevealResponse)
 async def reveal(req: RevealRequest) -> RevealResponse:
-    record = _COMMITMENTS.get(req.request_id)
-    if record is None:
+    db = _get_db()
+    result = db.table("commitments").select("*").eq("request_id", req.request_id).execute()
+    if not result.data:
         raise HTTPException(404, "unknown request_id")
+    record = result.data[0]
     if record["revealed"]:
         raise HTTPException(409, "already revealed")
 
@@ -225,17 +244,23 @@ async def reveal(req: RevealRequest) -> RevealResponse:
         record["request_hash"], record["agent_id"], req.score, req.evidence_uri, req.tag
     )
 
-    record["revealed"] = True
-    record["score"] = req.score
-    record["evidence_uri"] = req.evidence_uri
-    record["revealed_at"] = int(time.time())
-    record["reveal_tx"] = tx
+    revealed_at = int(time.time())
+    db.table("commitments").update(
+        {
+            "revealed": True,
+            "score": req.score,
+            "evidence_uri": req.evidence_uri,
+            "tag": req.tag,
+            "revealed_at": revealed_at,
+            "reveal_tx": tx,
+        }
+    ).eq("request_id", req.request_id).execute()
 
     return RevealResponse(
         request_id=req.request_id,
         score=req.score,
         on_chain_tx=tx,
-        revealed_at=record["revealed_at"],
+        revealed_at=revealed_at,
     )
 
 
@@ -247,9 +272,11 @@ async def verify(request_id: str) -> dict[str, Any]:
     In production this should re-derive from on-chain events, not local
     storage, exactly like omo's verify.server.ts does against public RPC.
     """
-    record = _COMMITMENTS.get(request_id)
-    if record is None:
+    db = _get_db()
+    result = db.table("commitments").select("*").eq("request_id", request_id).execute()
+    if not result.data:
         raise HTTPException(404, "unknown request_id")
+    record = result.data[0]
 
     checks = {
         "sealed": record["sealed_at"] is not None,
@@ -259,7 +286,8 @@ async def verify(request_id: str) -> dict[str, Any]:
             == record["request_hash"]
         ),
         "seal_before_reveal": (
-            record.get("revealed_at", record["sealed_at"] + 1) >= record["sealed_at"]
+            (record["revealed_at"] if record["revealed_at"] is not None else record["sealed_at"] + 1)
+            >= record["sealed_at"]
         ),
     }
     checks["all_pass"] = all(checks.values())

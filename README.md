@@ -45,6 +45,27 @@ names that no longer exist — so registries were deployed with a custom
 script using the tested `HardhatMinimalUUPS` → upgrade pattern from
 `test/upgradeable.ts` instead.
 
+## persistence
+
+State lives in Supabase Postgres (project `provenar`, table `commitments`),
+not an in-memory dict — survives server restarts. RLS is locked to "no
+public access"; the backend uses the `service_role` key, which bypasses
+RLS by design (this backend is the only trusted writer/reader of this
+table).
+
+Env vars needed in addition to the chain ones below:
+
+```bash
+export SUPABASE_URL=https://pbbxcxbyimagfyzotyen.supabase.co
+export SUPABASE_SERVICE_KEY=<service_role key -- get from Supabase dashboard:
+  Project Settings -> API -> Project API keys -> service_role (click to reveal)>
+```
+
+The `service_role` key is NOT available via the Supabase MCP connector on
+purpose (it only exposes publishable/anon keys) -- grab it from the
+dashboard directly, and treat it like any other credential that grants
+full write access: don't commit it, don't paste it in chat.
+
 ## running the API against a deployed adapter
 
 ```bash
@@ -72,15 +93,14 @@ from the registry directly.
 
 ## not yet done (in order)
 
-1. Persistence: swap the in-memory `_COMMITMENTS` dict in `src/main.py` for
-   Supabase, matching your usual stack — right now state doesn't survive
-   a server restart.
-2. Get one real third-party agent through the full loop on the actual
-   Robinhood Chain testnet deployment above (not just the local Anvil test).
-3. Backtest harness for the *gate rules themselves* (separate from this
+1. Get one real third-party agent through the full loop on the actual
+   Robinhood Chain testnet deployment above -- `toy_agent.py` proved the
+   loop works with an agent I wrote myself; the next test is someone
+   else's agent, with no inside knowledge of how Provenar is built.
+2. Backtest harness for the *gate rules themselves* (separate from this
    attestation layer) against historical price data before anyone wires up
    a live trading key on top of this.
-4. Metered-tier billing logic (free tier / per-commitment pricing) once
+3. Metered-tier billing logic (free tier / per-commitment pricing) once
    there's real usage to meter.
 
 ## explicitly out of scope
