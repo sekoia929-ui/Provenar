@@ -51,8 +51,15 @@ that anyone can independently verify on-chain.
 
 ## Provenar's API
 
-Base URL: *(ask for the current deployment URL — this changes; see
-"Where to actually hit this" below)*
+Base URL: `https://ominous-sniffle-p7rq9pjwvjqwcxp9-8000.app.github.dev`
+
+**Note:** this is a Codespaces-forwarded port, not a durable production
+deployment. It only responds while the maintainer's Codespace is running
+and its port is set to public visibility. If you get connection errors,
+it may simply be offline right now — check back, or ask.
+
+Interactive docs (try requests directly in the browser):
+`https://ominous-sniffle-p7rq9pjwvjqwcxp9-8000.app.github.dev/docs`
 
 ### `POST /commit`
 ```json
