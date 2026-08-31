@@ -47,18 +47,19 @@ script using the tested `HardhatMinimalUUPS` → upgrade pattern from
 
 ## persistence
 
-State lives in Supabase Postgres (project `provenar`, table `commitments`),
-not an in-memory dict — survives server restarts. RLS is locked to "no
-public access"; the backend uses the `service_role` key, which bypasses
-RLS by design (this backend is the only trusted writer/reader of this
-table).
+State lives in Supabase Postgres (project `supabase-violet-pebble`, table
+`commitments`), not an in-memory dict — survives server restarts. RLS is
+locked to "no public access"; the backend uses the `service_role` key,
+which bypasses RLS by design (this backend is the only trusted
+writer/reader of this table).
 
 Env vars needed in addition to the chain ones below:
 
 ```bash
-export SUPABASE_URL=https://pbbxcxbyimagfyzotyen.supabase.co
+export SUPABASE_URL=https://biypjodqolgixbxulpnc.supabase.co
 export SUPABASE_SERVICE_KEY=<service_role key -- get from Supabase dashboard:
-  Project Settings -> API -> Project API keys -> service_role (click to reveal)>
+  https://supabase.com/dashboard/project/biypjodqolgixbxulpnc/settings/api
+  -> Project API keys -> service_role (click to reveal)>
 ```
 
 The `service_role` key is NOT available via the Supabase MCP connector on
