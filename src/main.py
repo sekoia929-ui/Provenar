@@ -24,6 +24,7 @@ import time
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from web3 import Web3
 from eth_account import Account
@@ -264,14 +265,8 @@ async def reveal(req: RevealRequest) -> RevealResponse:
     )
 
 
-@app.get("/verify/{request_id}")
-async def verify(request_id: str) -> dict[str, Any]:
-    """
-    Independent re-check: recompute the hash from stored plaintext + nonce
-    and confirm it matches what was sealed, and that seal preceded reveal.
-    In production this should re-derive from on-chain events, not local
-    storage, exactly like omo's verify.server.ts does against public RPC.
-    """
+def _load_verification(request_id: str) -> dict[str, Any]:
+    """Shared by both the JSON /verify endpoint and the HTML /v view."""
     db = _get_db()
     result = db.table("commitments").select("*").eq("request_id", request_id).execute()
     if not result.data:
@@ -292,3 +287,102 @@ async def verify(request_id: str) -> dict[str, Any]:
     }
     checks["all_pass"] = all(checks.values())
     return {"request_id": request_id, "checks": checks, "record": record}
+
+
+@app.get("/verify/{request_id}")
+async def verify(request_id: str) -> dict[str, Any]:
+    """
+    Independent re-check: recompute the hash from stored plaintext + nonce
+    and confirm it matches what was sealed, and that seal preceded reveal.
+    In production this should re-derive from on-chain events, not local
+    storage, exactly like omo's verify.server.ts does against public RPC.
+    """
+    return _load_verification(request_id)
+
+
+@app.get("/v/{request_id}", response_class=HTMLResponse)
+async def verify_html(request_id: str) -> str:
+    """
+    Human-facing view of the same data /verify returns as JSON -- built
+    for sharing a specific commitment (e.g. on social media) rather than
+    for programmatic use. Not a general product UI; a single shareable
+    proof page.
+    """
+    data = _load_verification(request_id)
+    checks = data["checks"]
+    record = data["record"]
+    decision = record["decision"]
+
+    def badge(ok: bool) -> str:
+        return (
+            '<span style="color:#4ade80">&#10003; pass</span>'
+            if ok
+            else '<span style="color:#f87171">&#10007; fail</span>'
+        )
+
+    explorer_base = "https://explorer.testnet.chain.robinhood.com/tx/"
+    seal_tx = record.get("seal_tx") or ""
+    reveal_tx = record.get("reveal_tx") or ""
+    seal_link = (
+        f'<a href="{explorer_base}{seal_tx}" style="color:#60a5fa">{seal_tx[:14]}...</a>'
+        if seal_tx and seal_tx != "unarmed"
+        else "unarmed (no chain configured)"
+    )
+    reveal_link = (
+        f'<a href="{explorer_base}{reveal_tx}" style="color:#60a5fa">{reveal_tx[:14]}...</a>'
+        if reveal_tx and reveal_tx != "unarmed"
+        else "unarmed (no chain configured)"
+    )
+
+    overall = (
+        '<div style="color:#4ade80;font-size:1.1em">&#10003; ALL CHECKS PASSED</div>'
+        if checks["all_pass"]
+        else '<div style="color:#f87171;font-size:1.1em">&#10007; VERIFICATION FAILED</div>'
+    )
+
+    return f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Provenar — {request_id}</title>
+<style>
+  body {{ background:#0a0a0a; color:#e5e5e5; font-family: ui-monospace, monospace;
+          max-width: 640px; margin: 40px auto; padding: 0 20px; line-height: 1.6; }}
+  h1 {{ font-size: 1.3em; color:#f5f5f5; }}
+  .card {{ background:#141414; border:1px solid #262626; border-radius:10px;
+           padding: 20px; margin: 16px 0; }}
+  .label {{ color:#888; font-size:0.85em; text-transform: uppercase; letter-spacing:0.05em; }}
+  .row {{ display:flex; justify-content:space-between; padding: 6px 0; border-bottom:1px solid #1f1f1f; }}
+  .row:last-child {{ border-bottom:none; }}
+  a {{ text-decoration: none; }}
+  a:hover {{ text-decoration: underline; }}
+  pre {{ background:#0a0a0a; padding:10px; border-radius:6px; overflow-x:auto; font-size:0.85em; }}
+</style>
+</head>
+<body>
+  <h1>Provenar &mdash; commit/reveal proof</h1>
+  <div class="card">
+    {overall}
+    <div class="row"><span class="label">sealed</span>{badge(checks['sealed'])}</div>
+    <div class="row"><span class="label">revealed</span>{badge(checks['revealed'])}</div>
+    <div class="row"><span class="label">hash matches</span>{badge(checks['hash_matches'])}</div>
+    <div class="row"><span class="label">seal before reveal</span>{badge(checks['seal_before_reveal'])}</div>
+  </div>
+  <div class="card">
+    <div class="label">agent id</div>
+    <div>{record['agent_id']}</div>
+    <div class="label" style="margin-top:12px">decision</div>
+    <pre>{json.dumps(decision, indent=2)}</pre>
+    <div class="label" style="margin-top:12px">score</div>
+    <div>{record.get('score', '—')}</div>
+  </div>
+  <div class="card">
+    <div class="label">seal tx</div>
+    <div>{seal_link}</div>
+    <div class="label" style="margin-top:12px">reveal tx</div>
+    <div>{reveal_link}</div>
+  </div>
+</body>
+</html>
+"""
