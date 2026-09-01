@@ -386,3 +386,107 @@ async def verify_html(request_id: str) -> str:
 </body>
 </html>
 """
+
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard() -> str:
+    """
+    A monitor-list-style dashboard of recent commitments, styled after
+    Better Stack's monitor list: a status dot, a name, a state, a
+    timestamp, each row linking into the full /v/{id} proof page. This
+    also replaces the previous bare 404 at the root path with something
+    actually useful to land on.
+    """
+    db = _get_db()
+    result = (
+        db.table("commitments")
+        .select("*")
+        .order("sealed_at", desc=True)
+        .limit(25)
+        .execute()
+    )
+    records = result.data
+
+    def status_dot(record: dict) -> tuple[str, str]:
+        if not record["revealed"]:
+            return ("#facc15", "sealed, awaiting reveal")  # yellow
+        hash_ok = (
+            _canonical_hash(record["agent_id"], record["decision"], record["nonce"])
+            == record["request_hash"]
+        )
+        if hash_ok:
+            return ("#4ade80", "verified")  # green
+        return ("#f87171", "hash mismatch")  # red
+
+    def fmt_time(ts: int | None) -> str:
+        if ts is None:
+            return "—"
+        return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(ts))
+
+    def summarize(decision: dict) -> str:
+        action = decision.get("action", "?")
+        symbol = decision.get("symbol") or decision.get("market", "")
+        label = f"{action} {symbol}".strip()
+        return label if label != "?" else json.dumps(decision)[:40]
+
+    rows_html = ""
+    for r in records:
+        color, label = status_dot(r)
+        rows_html += f"""
+        <a class="row" href="/v/{r['request_id']}">
+          <span class="dot" style="background:{color}"></span>
+          <span class="name">agent #{r['agent_id']} &mdash; {summarize(r['decision'])}</span>
+          <span class="state" style="color:{color}">{label}</span>
+          <span class="score">{r.get('score', '—')}</span>
+          <span class="time">{fmt_time(r['sealed_at'])}</span>
+        </a>"""
+
+    if not records:
+        rows_html = '<div class="empty">No commitments yet. Run toy_agent.py or external_bot.py to create one.</div>'
+
+    return f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Provenar</title>
+<style>
+  body {{ background:#0a0a0a; color:#e5e5e5; font-family: ui-monospace, monospace;
+          max-width: 900px; margin: 40px auto; padding: 0 20px; }}
+  h1 {{ font-size: 1.4em; margin-bottom: 4px; }}
+  .subtitle {{ color:#888; font-size: 0.9em; margin-bottom: 24px; }}
+  .card {{ background:#141414; border:1px solid #262626; border-radius:10px; overflow:hidden; }}
+  .header {{ display:grid; grid-template-columns: 20px 1fr 160px 60px 180px;
+             gap:12px; padding: 12px 16px; color:#888; font-size:0.8em;
+             text-transform:uppercase; letter-spacing:0.05em; border-bottom:1px solid #262626; }}
+  .row {{ display:grid; grid-template-columns: 20px 1fr 160px 60px 180px;
+          gap:12px; align-items:center; padding: 14px 16px; text-decoration:none;
+          color:#e5e5e5; border-bottom:1px solid #1f1f1f; }}
+  .row:last-child {{ border-bottom:none; }}
+  .row:hover {{ background:#1a1a1a; }}
+  .dot {{ width:10px; height:10px; border-radius:50%; }}
+  .name {{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+  .state {{ font-size:0.85em; }}
+  .score {{ color:#aaa; }}
+  .time {{ color:#666; font-size:0.85em; }}
+  .empty {{ padding: 40px; text-align:center; color:#888; }}
+  .footer {{ margin-top: 20px; color:#666; font-size:0.85em; }}
+  a.footer-link {{ color:#60a5fa; text-decoration:none; }}
+</style>
+</head>
+<body>
+  <h1>Provenar</h1>
+  <div class="subtitle">ERC-8004 Validation Registry provider &mdash; Robinhood Chain testnet</div>
+  <div class="card">
+    <div class="header">
+      <span></span><span>agent / decision</span><span>status</span><span>score</span><span>sealed at</span>
+    </div>
+    {rows_html}
+  </div>
+  <div class="footer">
+    <a class="footer-link" href="/docs">API docs</a> &middot;
+    <a class="footer-link" href="https://github.com/sekoia929-ui/Provenar">source</a>
+  </div>
+</body>
+</html>
+"""
