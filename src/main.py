@@ -458,6 +458,86 @@ async def dashboard() -> str:
           <div class="bar-label">{label}</div>
         </div>"""
 
+    # --- contribution-style heatmap, last 12 weeks, real daily counts ---
+    heatmap_days = 84  # 12 weeks
+    heatmap_buckets: dict[str, int] = {}
+    for i in range(heatmap_days - 1, -1, -1):
+        day_start = now - i * day_seconds
+        key = time.strftime("%Y-%m-%d", time.gmtime(day_start))
+        heatmap_buckets[key] = 0
+    for r in all_records:
+        key = time.strftime("%Y-%m-%d", time.gmtime(r["sealed_at"]))
+        if key in heatmap_buckets:
+            heatmap_buckets[key] += 1
+    heatmap_max = max(heatmap_buckets.values()) if heatmap_buckets else 1
+    heatmap_max = max(heatmap_max, 1)
+
+    def heatmap_color(count: int) -> str:
+        if count == 0:
+            return "#161b22"
+        ratio = count / heatmap_max
+        if ratio <= 0.25:
+            return "#0e4429"
+        if ratio <= 0.5:
+            return "#006d32"
+        if ratio <= 0.75:
+            return "#26a641"
+        return "#39d353"
+
+    # lay out into weeks (columns), 7 days each (rows), oldest first
+    keys = list(heatmap_buckets.keys())
+    weeks: list[list[tuple[str, int]]] = []
+    for i in range(0, len(keys), 7):
+        week_keys = keys[i : i + 7]
+        weeks.append([(k, heatmap_buckets[k]) for k in week_keys])
+
+    heatmap_html = ""
+    for week in weeks:
+        heatmap_html += '<div class="heatmap-col">'
+        for day_key, count in week:
+            color = heatmap_color(count)
+            heatmap_html += (
+                f'<div class="heatmap-cell" style="background:{color}" '
+                f'title="{day_key}: {count} commitment(s)"></div>'
+            )
+        heatmap_html += "</div>"
+
+    # --- cumulative total over time, real running sum, rendered as SVG polyline ---
+    sorted_all = sorted(all_records, key=lambda r: r["sealed_at"])
+    cumulative_points: list[tuple[int, int]] = []
+    running = 0
+    for r in sorted_all:
+        running += 1
+        cumulative_points.append((r["sealed_at"], running))
+
+    svg_w, svg_h = 600, 90
+    if len(cumulative_points) >= 2:
+        t_min = cumulative_points[0][0]
+        t_max = cumulative_points[-1][0]
+        t_span = max(t_max - t_min, 1)
+        c_max = cumulative_points[-1][1]
+        coords = []
+        for ts, count in cumulative_points:
+            x = ((ts - t_min) / t_span) * (svg_w - 10) + 5
+            y = svg_h - 10 - ((count / c_max) * (svg_h - 20))
+            coords.append(f"{x:.1f},{y:.1f}")
+        polyline_points = " ".join(coords)
+        growth_label = f"+{len(all_records)}"
+    elif len(cumulative_points) == 1:
+        polyline_points = f"5,{svg_h-10} {svg_w-5},{svg_h-10}"
+        growth_label = "+1"
+    else:
+        polyline_points = ""
+        growth_label = "+0"
+
+    cumulative_svg = (
+        f'<svg viewBox="0 0 {svg_w} {svg_h}" class="cumulative-svg" preserveAspectRatio="none">'
+        f'<polyline points="{polyline_points}" fill="none" stroke="#8b8cf8" stroke-width="2" />'
+        f"</svg>"
+        if polyline_points
+        else '<div class="empty" style="padding:20px">not enough data yet</div>'
+    )
+
     rows_html = ""
     for r in recent_records:
         color, label = status_dot(r)
@@ -499,6 +579,12 @@ async def dashboard() -> str:
   .bar-col {{ flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%; }}
   .bar {{ width:100%; background:#4ade80; border-radius:3px 3px 0 0; min-height:2px; opacity:0.85; }}
   .bar-label {{ font-size:0.6em; color:#555; margin-top:6px; writing-mode:vertical-rl; text-orientation:mixed; height:34px; }}
+  .grid-2 {{ display:grid; grid-template-columns: 1.3fr 1fr; gap:14px; margin-bottom:14px; }}
+  .heatmap {{ display:flex; gap:3px; overflow-x:auto; padding: 4px 0; }}
+  .heatmap-col {{ display:flex; flex-direction:column; gap:3px; }}
+  .heatmap-cell {{ width:11px; height:11px; border-radius:2px; }}
+  .cumulative-svg {{ width:100%; height:90px; display:block; }}
+  .cumulative-growth {{ color:#8b8cf8; font-size:1.4em; margin-bottom:4px; }}
   .header {{ display:grid; grid-template-columns: 20px 1fr 160px 60px 180px;
              gap:12px; padding: 12px 16px; color:#888; font-size:0.8em;
              text-transform:uppercase; letter-spacing:0.05em; border-bottom:1px solid #1f1f1f; }}
@@ -544,6 +630,20 @@ async def dashboard() -> str:
     <div class="chart-title">activity, last 14 days</div>
     <div class="chart">
       {bars_html}
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card chart-card">
+      <div class="chart-title">activity, last 12 weeks</div>
+      <div class="heatmap">
+        {heatmap_html}
+      </div>
+    </div>
+    <div class="card chart-card">
+      <div class="chart-title">cumulative commitments</div>
+      <div class="cumulative-growth">{growth_label}</div>
+      {cumulative_svg}
     </div>
   </div>
 
