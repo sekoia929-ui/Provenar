@@ -391,21 +391,18 @@ async def verify_html(request_id: str) -> str:
 @app.get("/", response_class=HTMLResponse)
 async def dashboard() -> str:
     """
-    A monitor-list-style dashboard of recent commitments, styled after
-    Better Stack's monitor list: a status dot, a name, a state, a
-    timestamp, each row linking into the full /v/{id} proof page. This
-    also replaces the previous bare 404 at the root path with something
-    actually useful to land on.
+    A denser dashboard than the original monitor-list view: stat panels
+    and an activity chart, all computed from real commitment data --
+    deliberately NOT a decorative node/relationship graph, since Provenar's
+    data doesn't actually have that shape (each commitment is independent;
+    there's no real relationship structure between agents to draw). Every
+    number and bar here is a genuine aggregate over real rows, in keeping
+    with Provenar's whole point: nothing shown is fabricated or staged.
     """
     db = _get_db()
-    result = (
-        db.table("commitments")
-        .select("*")
-        .order("sealed_at", desc=True)
-        .limit(25)
-        .execute()
-    )
-    records = result.data
+    all_result = db.table("commitments").select("*").execute()
+    all_records = all_result.data
+    recent_records = sorted(all_records, key=lambda r: r["sealed_at"], reverse=True)[:25]
 
     def status_dot(record: dict) -> tuple[str, str]:
         if not record["revealed"]:
@@ -429,8 +426,40 @@ async def dashboard() -> str:
         label = f"{action} {symbol}".strip()
         return label if label != "?" else json.dumps(decision)[:40]
 
+    # --- real aggregate stats ---
+    total_commitments = len(all_records)
+    unique_agents = len({r["agent_id"] for r in all_records})
+    revealed = [r for r in all_records if r["revealed"]]
+    verify_rate = (len(revealed) / total_commitments * 100) if total_commitments else 0.0
+    scores = [r["score"] for r in revealed if r.get("score") is not None]
+    avg_score = (sum(scores) / len(scores)) if scores else None
+
+    # --- real daily activity, last 14 days, bucketed from sealed_at ---
+    now = int(time.time())
+    day_seconds = 86400
+    buckets: dict[str, int] = {}
+    for i in range(13, -1, -1):
+        day_start = now - i * day_seconds
+        label = time.strftime("%m-%d", time.gmtime(day_start))
+        buckets[label] = 0
+    for r in all_records:
+        label = time.strftime("%m-%d", time.gmtime(r["sealed_at"]))
+        if label in buckets:
+            buckets[label] += 1
+    max_count = max(buckets.values()) if buckets else 1
+    max_count = max(max_count, 1)
+
+    bars_html = ""
+    for label, count in buckets.items():
+        height_pct = round((count / max_count) * 100)
+        bars_html += f"""
+        <div class="bar-col" title="{label}: {count} commitment(s)">
+          <div class="bar" style="height:{max(height_pct, count and 4)}%"></div>
+          <div class="bar-label">{label}</div>
+        </div>"""
+
     rows_html = ""
-    for r in records:
+    for r in recent_records:
         color, label = status_dot(r)
         rows_html += f"""
         <a class="row" href="/v/{r['request_id']}">
@@ -441,8 +470,10 @@ async def dashboard() -> str:
           <span class="time">{fmt_time(r['sealed_at'])}</span>
         </a>"""
 
-    if not records:
+    if not recent_records:
         rows_html = '<div class="empty">No commitments yet. Run toy_agent.py or external_bot.py to create one.</div>'
+
+    avg_score_display = f"{avg_score:.0f}" if avg_score is not None else "—"
 
     return f"""
 <!DOCTYPE html>
@@ -451,19 +482,31 @@ async def dashboard() -> str:
 <meta charset="utf-8">
 <title>Provenar</title>
 <style>
-  body {{ background:#0a0a0a; color:#e5e5e5; font-family: ui-monospace, monospace;
-          max-width: 900px; margin: 40px auto; padding: 0 20px; }}
+  * {{ box-sizing: border-box; }}
+  body {{ background:#000; color:#e5e5e5; font-family: ui-monospace, monospace;
+          max-width: 1000px; margin: 40px auto; padding: 0 20px; }}
   h1 {{ font-size: 1.4em; margin-bottom: 4px; }}
   .subtitle {{ color:#888; font-size: 0.9em; margin-bottom: 24px; }}
-  .card {{ background:#141414; border:1px solid #262626; border-radius:10px; overflow:hidden; }}
+  .card {{ background:#0d0d0d; border:1px solid #1f1f1f; border-radius:10px; overflow:hidden; }}
+  .grid-4 {{ display:grid; grid-template-columns: repeat(4, 1fr); gap:14px; margin-bottom:14px; }}
+  .stat {{ background:#0d0d0d; border:1px solid #1f1f1f; border-radius:10px; padding:16px; }}
+  .stat-label {{ color:#888; font-size:0.75em; text-transform:uppercase; letter-spacing:0.05em; }}
+  .stat-value {{ font-size:1.8em; color:#f5f5f5; margin-top:4px; }}
+  .stat-value.green {{ color:#4ade80; }}
+  .chart-card {{ padding: 18px 16px 10px; margin-bottom:14px; }}
+  .chart-title {{ color:#888; font-size:0.75em; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:14px; }}
+  .chart {{ display:flex; align-items:flex-end; gap:4px; height:80px; }}
+  .bar-col {{ flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%; }}
+  .bar {{ width:100%; background:#4ade80; border-radius:3px 3px 0 0; min-height:2px; opacity:0.85; }}
+  .bar-label {{ font-size:0.6em; color:#555; margin-top:6px; writing-mode:vertical-rl; text-orientation:mixed; height:34px; }}
   .header {{ display:grid; grid-template-columns: 20px 1fr 160px 60px 180px;
              gap:12px; padding: 12px 16px; color:#888; font-size:0.8em;
-             text-transform:uppercase; letter-spacing:0.05em; border-bottom:1px solid #262626; }}
+             text-transform:uppercase; letter-spacing:0.05em; border-bottom:1px solid #1f1f1f; }}
   .row {{ display:grid; grid-template-columns: 20px 1fr 160px 60px 180px;
           gap:12px; align-items:center; padding: 14px 16px; text-decoration:none;
-          color:#e5e5e5; border-bottom:1px solid #1f1f1f; }}
+          color:#e5e5e5; border-bottom:1px solid #161616; }}
   .row:last-child {{ border-bottom:none; }}
-  .row:hover {{ background:#1a1a1a; }}
+  .row:hover {{ background:#131313; }}
   .dot {{ width:10px; height:10px; border-radius:50%; }}
   .name {{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
   .state {{ font-size:0.85em; }}
@@ -477,6 +520,33 @@ async def dashboard() -> str:
 <body>
   <h1>Provenar</h1>
   <div class="subtitle">ERC-8004 Validation Registry provider &mdash; Robinhood Chain testnet</div>
+
+  <div class="grid-4">
+    <div class="stat">
+      <div class="stat-label">commitments</div>
+      <div class="stat-value">{total_commitments}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">unique agents</div>
+      <div class="stat-value">{unique_agents}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">verify rate</div>
+      <div class="stat-value green">{verify_rate:.0f}%</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">avg score</div>
+      <div class="stat-value">{avg_score_display}</div>
+    </div>
+  </div>
+
+  <div class="card chart-card">
+    <div class="chart-title">activity, last 14 days</div>
+    <div class="chart">
+      {bars_html}
+    </div>
+  </div>
+
   <div class="card">
     <div class="header">
       <span></span><span>agent / decision</span><span>status</span><span>score</span><span>sealed at</span>
