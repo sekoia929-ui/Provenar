@@ -51,15 +51,15 @@ that anyone can independently verify on-chain.
 
 ## Provenar's API
 
-Base URL: `https://ominous-sniffle-p7rq9pjwvjqwcxp9-8000.app.github.dev`
+Base URL: `https://provenar.onrender.com`
 
-**Note:** this is a Codespaces-forwarded port, not a durable production
-deployment. It only responds while the maintainer's Codespace is running
-and its port is set to public visibility. If you get connection errors,
-it may simply be offline right now — check back, or ask.
+**Note:** this is a free-tier Render deployment. It spins down after 15
+minutes of no traffic and takes 30-60 seconds to wake back up on the
+next request -- if your first call seems to hang, that's why, not a bug.
+It stays up indefinitely once warm.
 
 Interactive docs (try requests directly in the browser):
-`https://ominous-sniffle-p7rq9pjwvjqwcxp9-8000.app.github.dev/docs`
+`https://provenar.onrender.com/docs`
 
 ### `POST /commit`
 ```json
