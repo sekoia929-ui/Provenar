@@ -24,7 +24,7 @@ import secrets
 import time
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from web3 import Web3
@@ -32,6 +32,49 @@ from eth_account import Account
 from supabase import create_client, Client
 
 app = FastAPI(title="Provenar", version="0.1.0")
+
+# --- rate limiting -------------------------------------------------------
+# Deliberately NOT an API key gate: the whole point of this service is
+# that any external agent can integrate freely (see QUICKSTART.md) --
+# requiring a secret only the maintainer has would defeat that. The real
+# risk is spam: /commit and /reveal each trigger a real on-chain tx paid
+# for by the operator wallet, so an unlimited, unauthenticated endpoint
+# means anyone can drain that wallet's gas or pollute the public
+# dashboard. Rate limiting closes that without blocking legitimate use --
+# no real agent needs more than a handful of commits per hour.
+#
+# In-memory, per-process: resets on restart and doesn't share state across
+# multiple instances. Fine for a single Render instance; would need a
+# shared store (e.g. the same Supabase table) if this ever scales to
+# multiple instances.
+_rate_limit_state: dict[str, list[float]] = {}
+
+
+def _client_key(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _check_rate_limit(request: Request, bucket: str, max_requests: int, window_seconds: int) -> None:
+    key = f"{bucket}:{_client_key(request)}"
+    now = time.time()
+    timestamps = _rate_limit_state.setdefault(key, [])
+    # prune anything outside the window
+    cutoff = now - window_seconds
+    while timestamps and timestamps[0] < cutoff:
+        timestamps.pop(0)
+    if len(timestamps) >= max_requests:
+        raise HTTPException(
+            429,
+            f"Rate limit exceeded: max {max_requests} requests per "
+            f"{window_seconds // 60} minutes for this endpoint. This limit "
+            f"exists to protect the operator wallet's gas from spam, not to "
+            f"block legitimate agents -- if you're hitting it during real "
+            f"use, say so and it can be raised.",
+        )
+    timestamps.append(now)
 
 # --- storage -----------------------------------------------------------
 # Supabase (Postgres) instead of the earlier in-memory dict, so state
@@ -199,7 +242,11 @@ async def _reveal_on_chain(
 
 # --- endpoints -------------------------------------------------------------
 @app.post("/commit", response_model=CommitResponse)
-async def commit(req: CommitRequest) -> CommitResponse:
+async def commit(req: CommitRequest, request: Request) -> CommitResponse:
+    # 10/hour per IP: comfortably above any real agent's normal cadence,
+    # well below what spam would need to actually hurt.
+    _check_rate_limit(request, "commit", max_requests=10, window_seconds=3600)
+
     nonce = secrets.token_hex(16)
     request_hash = _canonical_hash(req.agent_id, req.decision, nonce)
     request_id = secrets.token_urlsafe(12)
@@ -225,7 +272,11 @@ async def commit(req: CommitRequest) -> CommitResponse:
 
 
 @app.post("/reveal", response_model=RevealResponse)
-async def reveal(req: RevealRequest) -> RevealResponse:
+async def reveal(req: RevealRequest, request: Request) -> RevealResponse:
+    # 20/hour: reveals naturally track commits 1:1, so this should rarely bind
+    # for real use -- set slightly higher than the commit limit as headroom.
+    _check_rate_limit(request, "reveal", max_requests=20, window_seconds=3600)
+
     db = _get_db()
     result = db.table("commitments").select("*").eq("request_id", req.request_id).execute()
     if not result.data:

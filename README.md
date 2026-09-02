@@ -102,14 +102,17 @@ from the registry directly.
   user-supplied content is now HTML-escaped before rendering) -- flagged
   here since it's the kind of thing worth knowing was a real, live issue,
   not just a hypothetical.
-- **Not yet fixed:** `/commit` and `/reveal` have no authentication and
-  no rate limiting. Anyone can call `/commit`, which triggers a real
-  on-chain `seal()` transaction paid for by this service's operator
-  wallet. On testnet that costs nothing of real value, but it means the
-  operator wallet's testnet ETH balance can be drained by spam, and the
-  public dashboard can be polluted with junk entries. This needs an API
-  key or similar gate before any mainnet use, and ideally before wider
-  testnet sharing too.
+- **Fixed:** `/commit` and `/reveal` previously had no protection against
+  spam, meaning anyone could trigger unlimited real on-chain transactions
+  paid for by the operator wallet. Deliberately did NOT add an API key
+  requirement -- that would block the exact external agents this service
+  is meant for (see QUICKSTART.md). Added per-IP rate limiting instead:
+  10 commits/hour and 20 reveals/hour, comfortably above any real agent's
+  normal cadence. Read-only endpoints (`/verify`, `/v/{id}`, `/`, `/docs`)
+  are intentionally unrestricted. Currently in-memory per-process --
+  resets on restart and won't share state if this ever scales to multiple
+  instances; would need a shared store (e.g. the same Supabase table) at
+  that point.
 
 ## not yet done (in order)
 
