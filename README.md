@@ -47,25 +47,27 @@ script using the tested `HardhatMinimalUUPS` → upgrade pattern from
 
 ## persistence
 
-State lives in Supabase Postgres (project `supabase-violet-pebble`, table
-`commitments`), not an in-memory dict — survives server restarts. RLS is
-locked to "no public access"; the backend uses the `service_role` key,
-which bypasses RLS by design (this backend is the only trusted
-writer/reader of this table).
+State lives in Supabase Postgres, not an in-memory dict — survives
+server restarts. RLS is locked to "no public access"; the backend uses
+the `service_role` key, which bypasses RLS by design (this backend is
+the only trusted writer/reader of this table).
 
 Env vars needed in addition to the chain ones below:
 
 ```bash
-export SUPABASE_URL=https://biypjodqolgixbxulpnc.supabase.co
-export SUPABASE_SERVICE_KEY=<service_role key -- get from Supabase dashboard:
-  https://supabase.com/dashboard/project/biypjodqolgixbxulpnc/settings/api
-  -> Project API keys -> service_role (click to reveal)>
+export SUPABASE_URL=<your Supabase project URL>
+export SUPABASE_SERVICE_KEY=<service_role key -- get from your Supabase
+  dashboard: Project Settings -> API -> Project API keys -> service_role
+  (click to reveal)>
 ```
 
 The `service_role` key is NOT available via the Supabase MCP connector on
 purpose (it only exposes publishable/anon keys) -- grab it from the
 dashboard directly, and treat it like any other credential that grants
-full write access: don't commit it, don't paste it in chat.
+full write access: don't commit it, don't paste it in chat. The exact
+project URL is intentionally not published here either -- it's not a
+secret on its own (RLS blocks anonymous access regardless), but there's
+no reason to publish it for a stranger to target.
 
 ## running the API against a deployed adapter
 
@@ -91,6 +93,23 @@ seals → an agent calls `validationRequest()` naming this adapter as
 validator → reveal checks the plaintext matches, then calls
 `validationResponse()` → the score lands on-chain and reads back correctly
 from the registry directly.
+
+## known limitations / security status
+
+- **Fixed:** `/commit` and `/reveal` accept arbitrary JSON in `decision`,
+  which is rendered into HTML on the dashboard (`/`) and proof pages
+  (`/v/{id}`). This was a stored-XSS vector until it was patched (all
+  user-supplied content is now HTML-escaped before rendering) -- flagged
+  here since it's the kind of thing worth knowing was a real, live issue,
+  not just a hypothetical.
+- **Not yet fixed:** `/commit` and `/reveal` have no authentication and
+  no rate limiting. Anyone can call `/commit`, which triggers a real
+  on-chain `seal()` transaction paid for by this service's operator
+  wallet. On testnet that costs nothing of real value, but it means the
+  operator wallet's testnet ETH balance can be drained by spam, and the
+  public dashboard can be polluted with junk entries. This needs an API
+  key or similar gate before any mainnet use, and ideally before wider
+  testnet sharing too.
 
 ## not yet done (in order)
 

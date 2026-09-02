@@ -17,6 +17,7 @@ This service holds no trading key and never sees the agent's funds — it is
 strictly an attestation layer, same separation as omo's commit-only burner key.
 """
 import hashlib
+import html
 import json
 import os
 import secrets
@@ -345,7 +346,7 @@ async def verify_html(request_id: str) -> str:
 <html>
 <head>
 <meta charset="utf-8">
-<title>Provenar — {request_id}</title>
+<title>Provenar — {html.escape(request_id)}</title>
 <style>
   body {{ background:#0a0a0a; color:#e5e5e5; font-family: ui-monospace, monospace;
           max-width: 640px; margin: 40px auto; padding: 0 20px; line-height: 1.6; }}
@@ -373,7 +374,7 @@ async def verify_html(request_id: str) -> str:
     <div class="label">agent id</div>
     <div>{record['agent_id']}</div>
     <div class="label" style="margin-top:12px">decision</div>
-    <pre>{json.dumps(decision, indent=2)}</pre>
+    <pre>{html.escape(json.dumps(decision, indent=2))}</pre>
     <div class="label" style="margin-top:12px">score</div>
     <div>{record.get('score', '—')}</div>
   </div>
@@ -424,7 +425,8 @@ async def dashboard() -> str:
         action = decision.get("action", "?")
         symbol = decision.get("symbol") or decision.get("market", "")
         label = f"{action} {symbol}".strip()
-        return label if label != "?" else json.dumps(decision)[:40]
+        raw = label if label != "?" else json.dumps(decision)[:40]
+        return html.escape(str(raw))
 
     # --- real aggregate stats ---
     total_commitments = len(all_records)
