@@ -427,7 +427,7 @@ async def verify_html(request_id: str) -> str:
     <div class="label" style="margin-top:12px">decision</div>
     <pre>{html.escape(json.dumps(decision, indent=2))}</pre>
     <div class="label" style="margin-top:12px">score</div>
-    <div>{record.get('score', '—')}</div>
+    <div>{record['score'] if record.get('score') is not None else '—'}</div>
   </div>
   <div class="card">
     <div class="label">seal tx</div>
@@ -471,6 +471,19 @@ async def dashboard() -> str:
         if ts is None:
             return "—"
         return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(ts))
+
+    def fmt_age_short(now_ts: int, ts: int | None) -> str:
+        """Relative age like '16m', '4h', '2d' -- terminal-style compact time."""
+        if ts is None:
+            return "—"
+        delta = max(now_ts - ts, 0)
+        if delta < 3600:
+            return f"{delta // 60}m"
+        if delta < 86400:
+            return f"{delta // 3600}h"
+        if delta < 604800:
+            return f"{delta // 86400}d"
+        return f"{delta // 604800}w"
 
     def summarize(decision: dict) -> str:
         action = decision.get("action", "?")
@@ -594,13 +607,15 @@ async def dashboard() -> str:
     rows_html = ""
     for r in recent_records:
         color, label = status_dot(r)
+        badge_class = "ok" if color == "#4ade80" else ("pending" if color == "#facc15" else "bad")
+        age_str = fmt_age_short(now, r["sealed_at"])
         rows_html += f"""
         <a class="row" href="/v/{r['request_id']}">
-          <span class="dot" style="background:{color}"></span>
-          <span class="name">agent #{r['agent_id']} &mdash; {summarize(r['decision'])}</span>
-          <span class="state" style="color:{color}">{label}</span>
-          <span class="score">{r.get('score', '—')}</span>
-          <span class="time">{fmt_time(r['sealed_at'])}</span>
+          <span class="agent">#{r['agent_id']}</span>
+          <span class="name">{summarize(r['decision'])}</span>
+          <span class="badge {badge_class}">{label}</span>
+          <span class="num score">{r['score'] if r.get('score') is not None else '—'}</span>
+          <span class="num age">{age_str}</span>
         </a>"""
 
     if not recent_records:
@@ -613,99 +628,136 @@ async def dashboard() -> str:
 <html>
 <head>
 <meta charset="utf-8">
-<title>Provenar</title>
+<meta http-equiv="refresh" content="30">
+<title>PROVENAR — precommit terminal</title>
 <style>
+  :root {{
+    --bg:#050807; --panel:#0a0f0c; --grid:#132018;
+    --green:#3ddc7a; --green-dim:#1f6b3f; --green-bright:#7dffb0;
+    --white:#e8f5ec; --yellow:#e8d44d; --cyan:#6fc7d9; --red:#e0605a;
+  }}
   * {{ box-sizing: border-box; }}
-  body {{ background:#000; color:#e5e5e5; font-family: ui-monospace, monospace;
-          max-width: 1000px; margin: 40px auto; padding: 0 20px; }}
-  h1 {{ font-size: 1.4em; margin-bottom: 4px; }}
-  .subtitle {{ color:#888; font-size: 0.9em; margin-bottom: 24px; }}
-  .card {{ background:#0d0d0d; border:1px solid #1f1f1f; border-radius:10px; overflow:hidden; }}
-  .grid-4 {{ display:grid; grid-template-columns: repeat(4, 1fr); gap:14px; margin-bottom:14px; }}
-  .stat {{ background:#0d0d0d; border:1px solid #1f1f1f; border-radius:10px; padding:16px; }}
-  .stat-label {{ color:#888; font-size:0.75em; text-transform:uppercase; letter-spacing:0.05em; }}
-  .stat-value {{ font-size:1.8em; color:#f5f5f5; margin-top:4px; }}
-  .stat-value.green {{ color:#4ade80; }}
-  .chart-card {{ padding: 18px 16px 10px; margin-bottom:14px; }}
-  .chart-title {{ color:#888; font-size:0.75em; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:14px; }}
-  .chart {{ display:flex; align-items:flex-end; gap:4px; height:80px; }}
+  html, body {{ margin:0; padding:0; background:var(--bg); color:var(--white);
+    font-family:'Courier New', ui-monospace, 'SF Mono', Menlo, monospace; }}
+  body {{
+    background-image:
+      linear-gradient(rgba(61,220,122,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(61,220,122,0.03) 1px, transparent 1px);
+    background-size: 3px 3px;
+    max-width: 1000px; margin: 0 auto; padding: 0 0 30px;
+  }}
+  .scanline {{ position:fixed; top:0; left:0; right:0; height:2px;
+    background:linear-gradient(rgba(125,255,176,0.08), transparent);
+    animation: scan 6s linear infinite; pointer-events:none; z-index:50; }}
+  @keyframes scan {{ 0% {{ top:-2px; }} 100% {{ top:100%; }} }}
+
+  .topbar {{ display:flex; align-items:center; border-bottom:1px solid var(--grid); font-size:12px; }}
+  .topbar > div {{ padding:10px 14px; border-right:1px solid var(--grid); white-space:nowrap; }}
+  .topbar .title {{ background:var(--green-dim); color:var(--bg); font-weight:bold; letter-spacing:1px; }}
+  .topbar .sub {{ color:var(--green); flex:1; }}
+  .topbar .brand {{ color:var(--green-dim); margin-left:auto; border-right:none; }}
+
+  .statusbar {{ display:flex; align-items:center; gap:14px; padding:6px 14px; font-size:11px;
+    color:var(--green); border-bottom:1px solid var(--grid); flex-wrap:wrap; }}
+  .live-dot {{ display:inline-flex; align-items:center; gap:6px; background:var(--green-dim);
+    color:var(--bg); font-weight:bold; padding:2px 8px; border-radius:2px; }}
+  .live-dot::before {{ content:''; width:6px; height:6px; border-radius:50%;
+    background:var(--green-bright); animation:pulse 1.2s ease-in-out infinite; }}
+  @keyframes pulse {{ 0%,100% {{ opacity:1; }} 50% {{ opacity:0.3; }} }}
+  .statusbar .dim {{ color:#5a7a63; }}
+
+  .stats {{ display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--grid);
+    border-bottom:1px solid var(--grid); }}
+  .stat {{ background:var(--bg); padding:14px; }}
+  .stat-label {{ color:#5a7a63; font-size:10.5px; text-transform:uppercase; letter-spacing:0.05em; }}
+  .stat-value {{ font-size:1.6em; color:var(--white); margin-top:4px; }}
+  .stat-value.green {{ color:var(--green-bright); }}
+
+  .panel {{ border-bottom:1px solid var(--grid); padding:14px; }}
+  .panel-title {{ color:#5a7a63; font-size:10.5px; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:10px; }}
+  .chart {{ display:flex; align-items:flex-end; gap:4px; height:70px; }}
   .bar-col {{ flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%; }}
-  .bar {{ width:100%; background:#4ade80; border-radius:3px 3px 0 0; min-height:2px; opacity:0.85; }}
-  .bar-label {{ font-size:0.6em; color:#555; margin-top:6px; writing-mode:vertical-rl; text-orientation:mixed; height:34px; }}
-  .grid-2 {{ display:grid; grid-template-columns: 1.3fr 1fr; gap:14px; margin-bottom:14px; }}
-  .heatmap {{ display:flex; gap:3px; overflow-x:auto; padding: 4px 0; }}
+  .bar {{ width:100%; background:var(--green); border-radius:2px 2px 0 0; min-height:2px; opacity:0.85; }}
+  .bar-label {{ font-size:0.55em; color:#3a5a44; margin-top:5px; }}
+  .panels-2 {{ display:grid; grid-template-columns:1.3fr 1fr; gap:1px; background:var(--grid);
+    border-bottom:1px solid var(--grid); }}
+  .panels-2 .panel {{ background:var(--bg); border-bottom:none; }}
+  .heatmap {{ display:flex; gap:3px; overflow-x:auto; }}
   .heatmap-col {{ display:flex; flex-direction:column; gap:3px; }}
-  .heatmap-cell {{ width:11px; height:11px; border-radius:2px; }}
-  .cumulative-svg {{ width:100%; height:90px; display:block; }}
-  .cumulative-growth {{ color:#8b8cf8; font-size:1.4em; margin-bottom:4px; }}
-  .header {{ display:grid; grid-template-columns: 20px 1fr 160px 60px 180px;
-             gap:12px; padding: 12px 16px; color:#888; font-size:0.8em;
-             text-transform:uppercase; letter-spacing:0.05em; border-bottom:1px solid #1f1f1f; }}
-  .row {{ display:grid; grid-template-columns: 20px 1fr 160px 60px 180px;
-          gap:12px; align-items:center; padding: 14px 16px; text-decoration:none;
-          color:#e5e5e5; border-bottom:1px solid #161616; }}
-  .row:last-child {{ border-bottom:none; }}
-  .row:hover {{ background:#131313; }}
-  .dot {{ width:10px; height:10px; border-radius:50%; }}
-  .name {{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
-  .state {{ font-size:0.85em; }}
-  .score {{ color:#aaa; }}
-  .time {{ color:#666; font-size:0.85em; }}
-  .empty {{ padding: 40px; text-align:center; color:#888; }}
-  .footer {{ margin-top: 20px; color:#666; font-size:0.85em; }}
-  a.footer-link {{ color:#60a5fa; text-decoration:none; }}
+  .heatmap-cell {{ width:10px; height:10px; border-radius:2px; }}
+  .cumulative-svg {{ width:100%; height:80px; display:block; }}
+  .cumulative-growth {{ color:var(--green-bright); font-size:1.3em; margin-bottom:4px; }}
+
+  .col-head {{ display:grid; grid-template-columns:60px 1fr 140px 70px 70px; gap:10px;
+    padding:8px 14px; color:#5a7a63; font-size:10.5px; text-transform:uppercase;
+    letter-spacing:0.05em; border-bottom:1px solid var(--grid); background:var(--green-dim); }}
+  .col-head span:first-child {{ color:var(--bg); }}
+  .col-head span {{ color: var(--bg); }}
+  .row {{ display:grid; grid-template-columns:60px 1fr 140px 70px 70px; gap:10px;
+    align-items:center; padding:8px 14px; text-decoration:none; color:var(--white);
+    border-bottom:1px solid rgba(19,32,24,0.6); font-size:12px; }}
+  .row:hover {{ background:rgba(61,220,122,0.05); }}
+  .agent {{ color:var(--green); }}
+  .agent::before {{ content:'▲'; font-size:8px; margin-right:4px; color:var(--green-dim); }}
+  .name {{ color:var(--white); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+  .badge {{ display:inline-block; padding:1px 7px; border-radius:2px; font-size:10px;
+    font-weight:bold; color:var(--bg); text-align:center; }}
+  .badge.ok {{ background:var(--green); }}
+  .badge.pending {{ background:var(--yellow); }}
+  .badge.bad {{ background:var(--red); }}
+  .num {{ text-align:right; font-variant-numeric:tabular-nums; }}
+  .score {{ color:var(--cyan); }}
+  .age {{ color:#5a7a63; }}
+  .empty {{ padding:40px; text-align:center; color:#5a7a63; }}
+  .footer {{ padding:12px 14px; color:#5a7a63; font-size:11px; }}
+  a.footer-link {{ color:var(--cyan); text-decoration:none; }}
 </style>
 </head>
 <body>
-  <h1>Provenar</h1>
-  <div class="subtitle">ERC-8004 Validation Registry provider &mdash; Robinhood Chain testnet</div>
-
-  <div class="grid-4">
-    <div class="stat">
-      <div class="stat-label">commitments</div>
-      <div class="stat-value">{total_commitments}</div>
-    </div>
-    <div class="stat">
-      <div class="stat-label">unique agents</div>
-      <div class="stat-value">{unique_agents}</div>
-    </div>
-    <div class="stat">
-      <div class="stat-label">verify rate</div>
-      <div class="stat-value green">{verify_rate:.0f}%</div>
-    </div>
-    <div class="stat">
-      <div class="stat-label">avg score</div>
-      <div class="stat-value">{avg_score_display}</div>
-    </div>
+  <div class="scanline"></div>
+  <div class="topbar">
+    <div class="title">PROVENAR</div>
+    <div class="sub">precommit / reveal proof for ERC-8004 agents</div>
+    <div class="brand">ROBINHOOD CHAIN TESTNET</div>
+  </div>
+  <div class="statusbar">
+    <span class="live-dot">FEED:LIVE</span>
+    <span>{total_commitments} commitment(s)</span>
+    <span class="dim">&middot;</span>
+    <span>{unique_agents} agent(s)</span>
+    <span class="dim">&middot;</span>
+    <span>refreshes every 30s</span>
   </div>
 
-  <div class="card chart-card">
-    <div class="chart-title">activity, last 14 days</div>
-    <div class="chart">
-      {bars_html}
-    </div>
+  <div class="stats">
+    <div class="stat"><div class="stat-label">commitments</div><div class="stat-value">{total_commitments}</div></div>
+    <div class="stat"><div class="stat-label">unique agents</div><div class="stat-value">{unique_agents}</div></div>
+    <div class="stat"><div class="stat-label">verify rate</div><div class="stat-value green">{verify_rate:.0f}%</div></div>
+    <div class="stat"><div class="stat-label">avg score</div><div class="stat-value">{avg_score_display}</div></div>
   </div>
 
-  <div class="grid-2">
-    <div class="card chart-card">
-      <div class="chart-title">activity, last 12 weeks</div>
-      <div class="heatmap">
-        {heatmap_html}
-      </div>
+  <div class="panel">
+    <div class="panel-title">activity, last 14 days</div>
+    <div class="chart">{bars_html}</div>
+  </div>
+
+  <div class="panels-2">
+    <div class="panel">
+      <div class="panel-title">activity, last 12 weeks</div>
+      <div class="heatmap">{heatmap_html}</div>
     </div>
-    <div class="card chart-card">
-      <div class="chart-title">cumulative commitments</div>
+    <div class="panel">
+      <div class="panel-title">cumulative commitments</div>
       <div class="cumulative-growth">{growth_label}</div>
       {cumulative_svg}
     </div>
   </div>
 
-  <div class="card">
-    <div class="header">
-      <span></span><span>agent / decision</span><span>status</span><span>score</span><span>sealed at</span>
-    </div>
-    {rows_html}
+  <div class="col-head">
+    <span>AGENT</span><span>DECISION</span><span>STATUS</span><span style="text-align:right">SCORE</span><span style="text-align:right">AGE</span>
   </div>
+  {rows_html}
+
   <div class="footer">
     <a class="footer-link" href="/docs">API docs</a> &middot;
     <a class="footer-link" href="https://github.com/sekoia929-ui/Provenar">source</a>
