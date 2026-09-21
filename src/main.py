@@ -610,13 +610,15 @@ async def dashboard() -> str:
         badge_class = "ok" if color == "#4ade80" else ("pending" if color == "#facc15" else "bad")
         age_str = fmt_age_short(now, r["sealed_at"])
         rows_html += f"""
-        <a class="row" href="/v/{r['request_id']}">
-          <span class="agent">#{r['agent_id']}</span>
-          <span class="name">{summarize(r['decision'])}</span>
-          <span class="badge {badge_class}">{label}</span>
-          <span class="num score">{r['score'] if r.get('score') is not None else '—'}</span>
-          <span class="num age">{age_str}</span>
-        </a>"""
+        <div class="row">
+          <a class="agent" href="/agent/{r['agent_id']}">#{r['agent_id']}</a>
+          <a class="row-link" href="/v/{r['request_id']}">
+            <span class="name">{summarize(r['decision'])}</span>
+            <span class="badge {badge_class}">{label}</span>
+            <span class="num score">{r['score'] if r.get('score') is not None else '—'}</span>
+            <span class="num age">{age_str}</span>
+          </a>
+        </div>"""
 
     if not recent_records:
         rows_html = '<div class="empty">No commitments yet. Run toy_agent.py or external_bot.py to create one.</div>'
@@ -694,10 +696,12 @@ async def dashboard() -> str:
   .col-head span:first-child {{ color:var(--bg); }}
   .col-head span {{ color: var(--bg); }}
   .row {{ display:grid; grid-template-columns:60px 1fr 140px 70px 70px; gap:10px;
-    align-items:center; padding:8px 14px; text-decoration:none; color:var(--white);
+    align-items:center; padding:8px 14px; color:var(--white);
     border-bottom:1px solid rgba(19,32,24,0.6); font-size:12px; }}
   .row:hover {{ background:rgba(61,220,122,0.05); }}
-  .agent {{ color:var(--green); }}
+  .row-link {{ display:contents; color:inherit; text-decoration:none; }}
+  .agent {{ color:var(--green); text-decoration:none; }}
+  .agent:hover {{ text-decoration:underline; }}
   .agent::before {{ content:'▲'; font-size:8px; margin-right:4px; color:var(--green-dim); }}
   .name {{ color:var(--white); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
   .badge {{ display:inline-block; padding:1px 7px; border-radius:2px; font-size:10px;
@@ -761,6 +765,186 @@ async def dashboard() -> str:
   <div class="footer">
     <a class="footer-link" href="/docs">API docs</a> &middot;
     <a class="footer-link" href="https://github.com/sekoia929-ui/Provenar">source</a>
+  </div>
+</body>
+</html>
+"""
+
+@app.get("/agent/{agent_id}", response_class=HTMLResponse)
+async def agent_profile(agent_id: int) -> str:
+    """
+    A real per-agent track record: this is the direct answer to "what's
+    this agent's actual history look like," backed by cryptographic
+    precommit proof rather than the kind of self-reported/Sybil-able
+    reputation score ERC-8004's Reputation Registry struggles with.
+    Every number here is a genuine aggregate over that agent's own rows.
+    """
+    db = _get_db()
+    result = db.table("commitments").select("*").eq("agent_id", agent_id).execute()
+    records = sorted(result.data, key=lambda r: r["sealed_at"], reverse=True)
+
+    if not records:
+        return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Provenar — agent #{agent_id}</title>
+<style>body{{background:#050807;color:#e8f5ec;font-family:'Courier New',monospace;
+max-width:700px;margin:60px auto;padding:0 20px;}}
+a{{color:#6fc7d9;}}</style></head><body>
+<p>No commitments found for agent #{agent_id}.</p>
+<p><a href="/">&larr; back to dashboard</a></p>
+</body></html>"""
+
+    def status_dot(record: dict) -> tuple[str, str]:
+        if not record["revealed"]:
+            return ("pending", "sealed, awaiting reveal")
+        hash_ok = (
+            _canonical_hash(record["agent_id"], record["decision"], record["nonce"])
+            == record["request_hash"]
+        )
+        return ("ok", "verified") if hash_ok else ("bad", "hash mismatch")
+
+    def summarize(decision: dict) -> str:
+        action = decision.get("action", "?")
+        symbol = decision.get("symbol") or decision.get("market", "")
+        label = f"{action} {symbol}".strip()
+        raw = label if label != "?" else json.dumps(decision)[:40]
+        return html.escape(str(raw))
+
+    def fmt_age_short(now_ts: int, ts: int | None) -> str:
+        if ts is None:
+            return "—"
+        delta = max(now_ts - ts, 0)
+        if delta < 3600:
+            return f"{delta // 60}m"
+        if delta < 86400:
+            return f"{delta // 3600}h"
+        if delta < 604800:
+            return f"{delta // 86400}d"
+        return f"{delta // 604800}w"
+
+    now = int(time.time())
+    total = len(records)
+    revealed = [r for r in records if r["revealed"]]
+    verify_rate = (len(revealed) / total * 100) if total else 0.0
+    scores = [r["score"] for r in revealed if r.get("score") is not None]
+    avg_score = (sum(scores) / len(scores)) if scores else None
+    avg_score_display = f"{avg_score:.0f}" if avg_score is not None else "—"
+    first_seen = records[-1]["sealed_at"]
+    last_seen = records[0]["sealed_at"]
+
+    # score history sparkline, oldest to newest, as an inline SVG polyline
+    scored_in_order = [
+        (r["sealed_at"], r["score"]) for r in sorted(records, key=lambda r: r["sealed_at"])
+        if r.get("score") is not None
+    ]
+    svg_w, svg_h = 600, 70
+    if len(scored_in_order) >= 2:
+        coords = []
+        for i, (_, s) in enumerate(scored_in_order):
+            x = (i / (len(scored_in_order) - 1)) * (svg_w - 10) + 5
+            y = svg_h - 10 - ((s / 100) * (svg_h - 20))
+            coords.append(f"{x:.1f},{y:.1f}")
+        sparkline_svg = (
+            f'<svg viewBox="0 0 {svg_w} {svg_h}" class="cumulative-svg" preserveAspectRatio="none">'
+            f'<polyline points="{" ".join(coords)}" fill="none" stroke="#7dffb0" stroke-width="2" />'
+            f"</svg>"
+        )
+    elif len(scored_in_order) == 1:
+        sparkline_svg = f'<div class="empty" style="padding:20px">only one scored commitment so far</div>'
+    else:
+        sparkline_svg = '<div class="empty" style="padding:20px">no scored commitments yet</div>'
+
+    rows_html = ""
+    for r in records:
+        badge_class, label = status_dot(r)
+        age_str = fmt_age_short(now, r["sealed_at"])
+        score_display = r["score"] if r.get("score") is not None else "—"
+        rows_html += f"""
+        <a class="row" href="/v/{r['request_id']}">
+          <span class="name">{summarize(r['decision'])}</span>
+          <span class="badge {badge_class}">{label}</span>
+          <span class="num score">{score_display}</span>
+          <span class="num age">{age_str}</span>
+        </a>"""
+
+    return f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Provenar — agent #{agent_id}</title>
+<style>
+  :root {{
+    --bg:#050807; --grid:#132018; --green:#3ddc7a; --green-dim:#1f6b3f;
+    --green-bright:#7dffb0; --white:#e8f5ec; --yellow:#e8d44d; --cyan:#6fc7d9; --red:#e0605a;
+  }}
+  * {{ box-sizing: border-box; }}
+  html, body {{ margin:0; padding:0; background:var(--bg); color:var(--white);
+    font-family:'Courier New', ui-monospace, 'SF Mono', Menlo, monospace; }}
+  body {{
+    background-image:
+      linear-gradient(rgba(61,220,122,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(61,220,122,0.03) 1px, transparent 1px);
+    background-size: 3px 3px;
+    max-width: 900px; margin: 0 auto; padding: 0 0 30px;
+  }}
+  .topbar {{ display:flex; align-items:center; border-bottom:1px solid var(--grid); font-size:12px; }}
+  .topbar > div {{ padding:10px 14px; border-right:1px solid var(--grid); white-space:nowrap; }}
+  .topbar .title {{ background:var(--green-dim); color:var(--bg); font-weight:bold; letter-spacing:1px; }}
+  .topbar .back {{ color:var(--cyan); text-decoration:none; }}
+  .stats {{ display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--grid);
+    border-bottom:1px solid var(--grid); }}
+  .stat {{ background:var(--bg); padding:14px; }}
+  .stat-label {{ color:#5a7a63; font-size:10.5px; text-transform:uppercase; letter-spacing:0.05em; }}
+  .stat-value {{ font-size:1.6em; color:var(--white); margin-top:4px; }}
+  .stat-value.green {{ color:var(--green-bright); }}
+  .panel {{ border-bottom:1px solid var(--grid); padding:14px; }}
+  .panel-title {{ color:#5a7a63; font-size:10.5px; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:10px; }}
+  .cumulative-svg {{ width:100%; height:70px; display:block; }}
+  .empty {{ padding:20px; text-align:center; color:#5a7a63; font-size:12px; }}
+  .col-head {{ display:grid; grid-template-columns:1fr 140px 70px 70px; gap:10px;
+    padding:8px 14px; color:var(--bg); font-size:10.5px; text-transform:uppercase;
+    letter-spacing:0.05em; background:var(--green-dim); }}
+  .row {{ display:grid; grid-template-columns:1fr 140px 70px 70px; gap:10px;
+    align-items:center; padding:8px 14px; text-decoration:none; color:var(--white);
+    border-bottom:1px solid rgba(19,32,24,0.6); font-size:12px; }}
+  .row:hover {{ background:rgba(61,220,122,0.05); }}
+  .badge {{ display:inline-block; padding:1px 7px; border-radius:2px; font-size:10px;
+    font-weight:bold; color:var(--bg); text-align:center; }}
+  .badge.ok {{ background:var(--green); }}
+  .badge.pending {{ background:var(--yellow); }}
+  .badge.bad {{ background:var(--red); }}
+  .num {{ text-align:right; font-variant-numeric:tabular-nums; }}
+  .score {{ color:var(--cyan); }}
+  .age {{ color:#5a7a63; }}
+  .footer {{ padding:12px 14px; color:#5a7a63; font-size:11px; }}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="title">AGENT #{agent_id}</div>
+    <div><a class="back" href="/">&larr; all agents</a></div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="stat-label">commitments</div><div class="stat-value">{total}</div></div>
+    <div class="stat"><div class="stat-label">verify rate</div><div class="stat-value green">{verify_rate:.0f}%</div></div>
+    <div class="stat"><div class="stat-label">avg score</div><div class="stat-value">{avg_score_display}</div></div>
+    <div class="stat"><div class="stat-label">first seen</div><div class="stat-value" style="font-size:0.95em">{fmt_age_short(now, first_seen)} ago</div></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">score history (oldest &rarr; newest)</div>
+    {sparkline_svg}
+  </div>
+
+  <div class="col-head">
+    <span>DECISION</span><span>STATUS</span><span style="text-align:right">SCORE</span><span style="text-align:right">AGE</span>
+  </div>
+  {rows_html}
+
+  <div class="footer">
+    Last activity {fmt_age_short(now, last_seen)} ago &middot;
+    <a class="footer-link" style="color:#6fc7d9" href="/docs">API docs</a>
   </div>
 </body>
 </html>
